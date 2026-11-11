@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="文字起こし">
+<meta name="theme-color" content="#17181c">
+<title>Groq文字起こし</title>
+<style>
+  :root {
+    --bg: #17181c; --surface: #212227; --fg: #f2f2f4; --muted: #9a9ba3;
+    --line: #34353c; --rec: #d45353; --rec-live: #f06a6a;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    font-size: 16px; line-height: 1.6;
+    padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right))
+             max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+  }
+  .app { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+
+  .top { display: flex; justify-content: flex-end; }
+  #keyToggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; padding: 8px 4px; }
+  #keyToggle svg { width: 16px; height: 16px; }
+
+  #keyInfo { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+  #keyInfo b { color: var(--fg); font-weight: 600; }
+
+  #keyPanel { margin-top: 12px; display: flex; gap: 8px; }
+  #key {
+    flex: 1; min-width: 0; font: inherit; padding: 12px 14px;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 12px;
+  }
+  #saveKey { padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); font-weight: 600; }
+
+  #hint {
+    margin-top: 14px; display: flex; align-items: flex-start; gap: 12px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px 14px 14px 16px; font-size: 13px; color: var(--muted);
+  }
+  #hint p { margin: 0; flex: 1; min-width: 0; }
+  #hintClose { color: var(--muted); font-size: 18px; line-height: 1; padding: 4px 6px; }
+
+  #status { margin: 44px 0 0; text-align: center; color: var(--muted); font-size: 16px; min-height: 1.6em; overflow-wrap: anywhere; }
+  #status.live { color: var(--rec-live); }
+
+  .recwrap { display: flex; flex-direction: column; align-items: center; gap: 40px; margin: 44px 0 48px; }
+  #mic { width: 112px; height: 112px; border-radius: 50%; background: var(--rec); transition: transform .15s, border-radius .15s; }
+  #mic:active { transform: scale(.95); }
+  #mic.live { background: var(--rec-live); border-radius: 28%; transform: scale(.78); animation: pulse 1.4s ease-in-out infinite; }
+  #mic:disabled { opacity: .45; cursor: default; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 18px rgba(240,106,106,.14); } }
+  @media (prefers-reduced-motion: reduce) { #mic, #mic.live { animation: none; transition: none; } }
+  #caption { margin: 0; color: var(--muted); font-size: 14px; }
+
+  .reshead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .reshead span { color: var(--muted); font-size: 14px; }
+  .tools { display: flex; gap: 8px; }
+  .icon { width: 40px; height: 40px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); color: var(--muted); display: grid; place-items: center; }
+  .icon svg { width: 18px; height: 18px; }
+  .icon.done { color: var(--fg); }
+  #text {
+    width: 100%; min-height: 190px; resize: vertical;
+    background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 18px; font: inherit; font-size: 17px;
+  }
+  #text::placeholder { color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <button id="keyToggle" type="button" aria-expanded="false" aria-controls="keyPanel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 20 3M16 7l3 3M13.5 9.5l2 2"/></svg>
+      APIキー設定
+    </button>
+  </div>
+
+  <p id="keyInfo"></p>
+  <div id="keyPanel" hidden>
+    <input id="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="gsk_..." aria-label="GroqのAPIキー">
+    <button id="saveKey" type="button">保存</button>
+  </div>
+
+  <div id="hint" hidden>
+    <p>ホーム画面に追加すると、アプリのように開けます。Safariでこのページを開いて、共有ボタンから「ホーム画面に追加」を選んでください。</p>
+    <button id="hintClose" type="button" aria-label="閉じる">×</button>
+  </div>
+
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <div class="recwrap">
+    <button id="mic" type="button" aria-label="録音を開始"></button>
+    <p id="caption">押すと録音開始</p>
+  </div>
+
+  <div class="reshead">
+    <span>文字起こし結果</span>
+    <div class="tools">
+      <button id="clear" class="icon" type="button" aria-label="消す">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+      </button>
+      <button id="copy" class="icon" type="button" aria-label="コピー">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.500 4H15"/></svg>
+      </button>
+    </div>
+  </div>
+  <textarea id="text" placeholder="録音すると、ここにテキストが出ます"></textarea>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var text = $("text"), status = $("status"), mic = $("mic"), caption = $("caption");
+  var copy = $("copy"), key = $("key"), keyPanel = $("keyPanel"), keyToggle = $("keyToggle"), keyInfo = $("keyInfo"), hint = $("hint");
+  var DRAFT = "koe-memo-groq-draft", KEY = "koe-memo-groq-key", HINT = "koe-memo-groq-hint";
+  var MODEL = "whisper-large-v3-turbo";
+  var READY = "ボタンを押して話してください";
+  var recorder = null, chunks = [], stream = null, busy = false;
+
+  function get(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+  function set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function say(msg, live) { status.textContent = msg; status.classList.toggle("live", !!live); }
+
+  function showKey() {
+    var k = get(KEY);
+    keyInfo.textContent = "";
+    if (!k) { keyInfo.textContent = "キーが未設定です"; return; }
+    var b = document.createElement("b");
+    b.textContent = k.slice(0, 4) + "..." + k.slice(-4) + "・全" + k.length + "文字";
+    keyInfo.append("保存中のキー: ", b);
+  }
+  function openKey(open) {
+    keyPanel.hidden = !open; keyToggle.setAttribute("aria-expanded", String(open));
+    if (open) key.focus();
+  }
+
+  text.value = get(DRAFT);
+  text.addEventListener("input", function () { set(DRAFT, text.value); });
+  showKey();
+  if (get(KEY)) say(READY); else { say("まずAPIキーを設定してください"); openKey(true); }
+
+  var standalone = window.navigator.standalone || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+  hint.hidden = !!standalone || get(HINT) === "1";
+  $("hintClose").addEventListener("click", function () { hint.hidden = true; set(HINT, "1"); });
+
+  keyToggle.addEventListener("click", function () { openKey(keyPanel.hidden); });
+  $("saveKey").addEventListener("click", function () {
+    var v = key.value.trim();
+    if (!v) { say("キーを入力してください"); return; }
+    set(KEY, v); key.value = ""; showKey(); openKey(false); say(READY);
+  });
+
+  copy.addEventListener("click", function () {
+    if (!text.value) { say("まだテキストがありません"); return; }
+    navigator.clipboard.writeText(text.value).then(function () {
+      copy.classList.add("done"); say("コピーしました");
+      setTimeout(function () { copy.classList.remove("done"); }, 1500);
+    }).catch(function () {
+      text.focus(); text.select(); say("選択しました。長押しでコピーしてください");
+    });
+  });
+  $("clear").addEventListener("click", function () { text.value = ""; set(DRAFT, ""); say("消しました"); });
+
+  function idle(msg) {
+    busy = false; mic.disabled = false; mic.classList.remove("live");
+    mic.setAttribute("aria-label", "録音を開始"); caption.textContent = "押すと録音開始";
+    say(msg || READY);
+  }
+
+  function transcribe(blob) {
+    var type = blob.type || "audio/webm";
+    var ext = type.indexOf("mp4") >= 0 ? "m4a" : type.indexOf("ogg") >= 0 ? "ogg" : type.indexOf("wav") >= 0 ? "wav" : "webm";
+    var form = new FormData();
+    form.append("file", blob, "voice." + ext);
+    form.append("model", MODEL);
+    form.append("language", "ja");
+    form.append("response_format", "json");
+    return fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + get(KEY) },
+      body: form
+    }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        if (!res.ok) {
+          if (res.status === 401) throw new Error("APIキーが正しくありません");
+          if (res.status === 429) throw new Error("回数制限です。少し待ってからもう一度");
+          throw new Error((body.error && body.error.message) || ("エラー " + res.status));
+        }
+        return (body.text || "").trim();
+      });
+    });
+  }
+
+  function start() {
+    if (!get(KEY)) { openKey(true); say("まずAPIキーを設定してください"); return; }
+    if (!navigator.mediaDevices || !window.MediaRecorder) { say("このブラウザは録音に対応していません"); return; }
+    busy = true; mic.disabled = true; say("マイクを準備中…");
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) {
+      stream = s; chunks = [];
+      recorder = new MediaRecorder(s);
+      recorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      recorder.onstop = function () {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        var blob = new Blob(chunks, { type: recorder.mimeType || (chunks[0] && chunks[0].type) || "audio/webm" });
+        recorder = null;
+        if (!blob.size) { idle("音が録れませんでした"); return; }
+        mic.disabled = true; mic.classList.remove("live"); caption.textContent = "少し待ってください"; say("文字起こし中…");
+        transcribe(blob).then(function (t) {
+          if (!t) { idle("言葉が聞き取れませんでした"); return; }
+          text.value += (text.value && !/\n$/.test(text.value) ? "\n" : "") + t;
+          text.scrollTop = text.scrollHeight; set(DRAFT, text.value);
+          idle("できました。続けて話せます");
+        }).catch(function (err) {
+          idle(err instanceof TypeError ? "通信できませんでした" : (err.message || "失敗しました"));
+        });
+      };
+      recorder.start();
+      mic.disabled = false; mic.classList.add("live");
+      mic.setAttribute("aria-label", "録音を止めて文字にする"); caption.textContent = "押すと停止して文字起こし";
+      say("録音中…", true);
+    }).catch(function () { idle("マイクが許可されていません"); });
+  }
+
+  mic.addEventListener("click", function () {
+    if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+    if (!busy) start();
+  });
+})();
+</script>
+</body>
+</html>
