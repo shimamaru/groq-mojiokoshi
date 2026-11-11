@@ -49,6 +49,16 @@
   #hint p { margin: 0; flex: 1; min-width: 0; }
   #hintClose { color: var(--muted); font-size: 18px; line-height: 1; padding: 4px 6px; }
 
+  #pending {
+    margin: 0 0 28px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; font-size: 14px;
+  }
+  #pending p { margin: 0; flex: 1 1 180px; min-width: 0; }
+  #pending .acts { display: flex; gap: 8px; }
+  #pending button { padding: 9px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; font-weight: 600; }
+  #retry { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  #discard { color: var(--muted); }
+
   #status { margin: 44px 0 0; text-align: center; color: var(--muted); font-size: 16px; min-height: 1.6em; overflow-wrap: anywhere; }
   #status.live { color: var(--rec-live); }
 
@@ -101,6 +111,14 @@
   <div class="recwrap">
     <button id="mic" type="button" aria-label="録音を開始"></button>
     <p id="caption">押すと録音開始</p>
+  </div>
+
+  <div id="pending" hidden>
+    <p id="pendingText"></p>
+    <div class="acts">
+      <button id="retry" type="button">文字にする</button>
+      <button id="discard" type="button">破棄</button>
+    </div>
   </div>
 
   <div class="reshead">
@@ -173,7 +191,7 @@
     });
   });
   // iPhoneの「ショートカット」アプリにある同名のショートカットへ文字を渡す
-  var SHORTCUT = "こえメモ";
+  var SHORTCUT = "文字起こしをメモへ";
   $("memo").addEventListener("click", function () {
     if (!text.value) { say("まだテキストがありません"); return; }
     say("メモに送ります");
@@ -182,8 +200,76 @@
   });
   $("clear").addEventListener("click", function () { text.value = ""; set(DRAFT, ""); say("消しました"); });
 
+  // 録音は文字起こしが終わるまで端末内（IndexedDB）に残し、成功したら消す
+  var dbp = null;
+  function db() {
+    if (!dbp) dbp = new Promise(function (res, rej) {
+      var r = indexedDB.open("koe-memo-groq", 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore("pending", { keyPath: "id" }); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+    return dbp;
+  }
+  function store(mode, fn) {
+    return db().then(function (d) {
+      return new Promise(function (res, rej) {
+        var t = d.transaction("pending", mode), rq = fn(t.objectStore("pending"));
+        t.oncomplete = function () { res(rq && rq.result); };
+        t.onerror = t.onabort = function () { rej(t.error); };
+      });
+    });
+  }
+  function keep(id, blob) {
+    return blob.arrayBuffer().then(function (buf) {
+      return store("readwrite", function (s) { return s.put({ id: id, buf: buf, type: blob.type }); });
+    });
+  }
+  function drop(id) { return store("readwrite", function (s) { return s.delete(id); }).catch(function () {}); }
+  function kept() { return store("readonly", function (s) { return s.getAll(); }).catch(function () { return []; }); }
+
+  var pending = $("pending"), discard = $("discard"), armed = false;
+  function refreshPending() {
+    kept().then(function (list) {
+      armed = false; discard.textContent = "破棄";
+      pending.hidden = busy || !list.length;
+      $("pendingText").textContent = "文字起こし前の録音が" + list.length + "件、この端末に残っています。";
+    });
+  }
+  $("retry").addEventListener("click", function () {
+    if (busy) return;
+    if (!get(KEY)) { openKey(true); say("まずAPIキーを設定してください"); return; }
+    kept().then(function (list) {
+      if (!list.length) { refreshPending(); return; }
+      list.sort(function (a, b) { return a.id - b.id; });
+      process(list[0].id, new Blob([list[0].buf], { type: list[0].type || "audio/webm" }));
+    });
+  });
+  discard.addEventListener("click", function () {
+    if (!armed) { armed = true; discard.textContent = "本当に破棄"; return; }
+    store("readwrite", function (s) { return s.clear(); }).catch(function () {}).then(function () {
+      refreshPending(); say("残っていた録音を破棄しました");
+    });
+  });
+
+  function process(id, blob) {
+    busy = true; pending.hidden = true;
+    mic.disabled = true; mic.classList.remove("live"); caption.textContent = "少し待ってください"; say("文字起こし中…");
+    transcribe(blob).then(function (t) {
+      return drop(id).then(function () {
+        if (!t) { idle("言葉が聞き取れませんでした"); return; }
+        text.value += (text.value && !/\n$/.test(text.value) ? "\n" : "") + t;
+        text.scrollTop = text.scrollHeight; set(DRAFT, text.value);
+        idle("できました。続けて話せます");
+      });
+    }).catch(function (err) {
+      var m = err instanceof TypeError ? "通信できませんでした" : (err.message || "失敗しました");
+      idle(m + "。録音は残してあります");
+    });
+  }
+
   function idle(msg) {
-    busy = false; mic.disabled = false; mic.classList.remove("live");
+    busy = false; refreshPending(); mic.disabled = false; mic.classList.remove("live");
     mic.setAttribute("aria-label", "録音を開始"); caption.textContent = "押すと録音開始";
     say(msg || READY);
   }
@@ -225,15 +311,8 @@
         var blob = new Blob(chunks, { type: recorder.mimeType || (chunks[0] && chunks[0].type) || "audio/webm" });
         recorder = null;
         if (!blob.size) { idle("音が録れませんでした"); return; }
-        mic.disabled = true; mic.classList.remove("live"); caption.textContent = "少し待ってください"; say("文字起こし中…");
-        transcribe(blob).then(function (t) {
-          if (!t) { idle("言葉が聞き取れませんでした"); return; }
-          text.value += (text.value && !/\n$/.test(text.value) ? "\n" : "") + t;
-          text.scrollTop = text.scrollHeight; set(DRAFT, text.value);
-          idle("できました。続けて話せます");
-        }).catch(function (err) {
-          idle(err instanceof TypeError ? "通信できませんでした" : (err.message || "失敗しました"));
-        });
+        var id = Date.now();
+        keep(id, blob).catch(function () {}).then(function () { process(id, blob); });
       };
       recorder.start();
       mic.disabled = false; mic.classList.add("live");
@@ -246,6 +325,8 @@
     if (recorder && recorder.state === "recording") { recorder.stop(); return; }
     if (!busy) start();
   });
+
+  refreshPending();
 })();
 </script>
 </body>
